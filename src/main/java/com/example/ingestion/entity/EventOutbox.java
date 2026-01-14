@@ -32,7 +32,7 @@ public class EventOutbox {
     private String eventId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 16)
+    @Column(name = "status", nullable = false, columnDefinition = "VARCHAR(16)")
     private OutboxStatus status;
 
     @Column(name = "retry_count", nullable = false)

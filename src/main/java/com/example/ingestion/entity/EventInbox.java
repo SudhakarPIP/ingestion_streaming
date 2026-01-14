@@ -42,7 +42,7 @@ public class EventInbox {
     @Column(name = "source", length = 64)
     private String source;
 
-    @Column(name = "checksum", length = 64)
+    @Column(name = "checksum", columnDefinition = "CHAR(64)")
     private String checksum;
 
     @Column(name = "created_at", nullable = false, updatable = false, columnDefinition = "DATETIME(3)")

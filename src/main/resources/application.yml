@@ -3,7 +3,7 @@ spring:
     name: ingestion-streaming-service
   
   datasource:
-    url: jdbc:mysql://localhost:3306/eventdb?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
+    url: jdbc:mysql://localhost:3306/pip?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
     username: root
     password: Svmr12!@
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -26,9 +26,15 @@ server:
   port: 8080
 
 bigquery:
+  # REQUIRED: Set your actual GCP project ID
+  # Option 1: Set environment variable BIGQUERY_PROJECT_ID
+  # Option 2: Replace 'your-gcp-project-id' below with your actual project ID
   project-id: ${BIGQUERY_PROJECT_ID:your-gcp-project-id}
   dataset: ${BIGQUERY_DATASET:analytics}
   table: ${BIGQUERY_TABLE:events_curated}
+  # REQUIRED: Path to GCP service account JSON key file
+  # Option 1: Set environment variable GOOGLE_APPLICATION_CREDENTIALS
+  # Option 2: Provide full path to JSON file below (e.g., C:\path\to\credentials.json)
   credentials-path: ${GOOGLE_APPLICATION_CREDENTIALS:}
 
 worker:
@@ -62,7 +68,7 @@ logging:
   level:
     com.example.ingestion: INFO
     org.springframework.web: INFO
-    org.hibernate.SQL: DEBUG
+    org.hibernate.SQL: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] [%X{tenantId}] [%X{eventId}] [%X{outboxId}] %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] [%X{tenantId}] [%X{eventId}] [%X{outboxId}] %logger{36} - %msg%n"

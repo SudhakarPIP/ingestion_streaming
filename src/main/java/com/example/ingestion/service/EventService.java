@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
@@ -98,22 +99,28 @@ public class EventService {
 
         // Create outbox entry (only if not already exists)
         EventOutbox outbox = null;
-        if (!eventOutboxRepository.existsByEventId(eventInbox.getEventId())) {
-            outbox = EventOutbox.builder()
-                    .tenantId(eventInbox.getTenantId())
-                    .eventId(eventInbox.getEventId())
-                    .status(OutboxStatus.PENDING)
-                    .retryCount(0)
-                    .nextRetryAt(LocalDateTime.now())
-                    .build();
-            outbox = eventOutboxRepository.save(outbox);
-            MDC.put("outboxId", String.valueOf(outbox.getId()));
-            log.info("Outbox entry created: eventId={}, outboxId={}", eventInbox.getEventId(), outbox.getId());
-        } else {
-            outbox = eventOutboxRepository.findByEventId(eventInbox.getEventId()).orElse(null);
-            if (outbox != null) {
+        try {
+            if (!eventOutboxRepository.existsByEventId(eventInbox.getEventId())) {
+                outbox = EventOutbox.builder()
+                        .tenantId(eventInbox.getTenantId())
+                        .eventId(eventInbox.getEventId())
+                        .status(OutboxStatus.PENDING)
+                        .retryCount(0)
+                        .nextRetryAt(LocalDateTime.now())
+                        .build();
+                outbox = eventOutboxRepository.save(outbox);
                 MDC.put("outboxId", String.valueOf(outbox.getId()));
+                log.info("Outbox entry created: eventId={}, outboxId={}", eventInbox.getEventId(), outbox.getId());
+            } else {
+                outbox = eventOutboxRepository.findByEventId(eventInbox.getEventId()).orElse(null);
+                if (outbox != null) {
+                    MDC.put("outboxId", String.valueOf(outbox.getId()));
+                }
             }
+        } catch (DataAccessException e) {
+            log.error("Database error saving outbox: tenantId={}, eventId={}", 
+                eventInbox.getTenantId(), eventInbox.getEventId(), e);
+            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
         }
 
         eventsIngestedTotal.increment();
@@ -121,13 +128,17 @@ public class EventService {
         return toResponse(eventInbox, outbox);
     }
 
-    @Transactional
     public List<EventResponse> ingestEvents(List<EventRequest> requests) {
         eventValidator.validateBulkRequest(requests);
 
         return requests.stream()
-                .map(this::ingestEvent)
+                .map(this::ingestEventInNewTransaction)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public EventResponse ingestEventInNewTransaction(EventRequest request) {
+        return ingestEvent(request);
     }
 
     public EventResponse getEvent(String tenantId, String eventId) {
