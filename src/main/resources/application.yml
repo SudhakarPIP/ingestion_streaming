@@ -1,7 +1,7 @@
 spring:
   application:
     name: ingestion-streaming-service
-  
+
   datasource:
     url: jdbc:mysql://localhost:3306/pip?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
     username: root
@@ -16,7 +16,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
@@ -25,17 +25,40 @@ spring:
 server:
   port: 8080
 
+
+
 bigquery:
   # REQUIRED: Set your actual GCP project ID
   # Option 1: Set environment variable BIGQUERY_PROJECT_ID
   # Option 2: Replace 'your-gcp-project-id' below with your actual project ID
-  project-id: ${BIGQUERY_PROJECT_ID:your-gcp-project-id}
+  project-id: bigquerystreaming-484309
   dataset: ${BIGQUERY_DATASET:analytics}
   table: ${BIGQUERY_TABLE:events_curated}
+  credentials-path: C:\Users\sudreddy\Desktop\PIP\Task3\key.json
   # REQUIRED: Path to GCP service account JSON key file
   # Option 1: Set environment variable GOOGLE_APPLICATION_CREDENTIALS
   # Option 2: Provide full path to JSON file below (e.g., C:\path\to\credentials.json)
-  credentials-path: ${GOOGLE_APPLICATION_CREDENTIALS:}
+  #  credentials-path: ${GOOGLE_APPLICATION_CREDENTIALS:}
+  # Use batch loading instead of streaming inserts (works with free tier)
+  # Set to true for free tier compatibility, false for real-time streaming (requires paid account)
+  use-batch-loading: ${BIGQUERY_USE_BATCH_LOADING:true}
+  batch-size: ${BIGQUERY_BATCH_SIZE:100}
+  # Skip BigQuery operations if billing is not enabled (free tier)
+  # When true, events will be marked as DONE without sending to BigQuery
+  # Set to true for development/testing without BigQuery billing enabled
+  # When false, events will fail if BigQuery is unavailable (requires billing)
+  skip-if-unavailable: ${BIGQUERY_SKIP_IF_UNAVAILABLE:false}
+  # Use LOAD jobs with Cloud Storage (works with free tier, no billing required)
+  # When true, uses Cloud Storage + LOAD jobs instead of streaming inserts
+  # This works with BigQuery free tier without billing account
+  use-load-jobs: ${BIGQUERY_USE_LOAD_JOBS:true}
+  # Cloud Storage bucket for temporary files (for LOAD jobs)
+  # If not provided, a bucket will be auto-created: {project-id}-bigquery-load-temp
+  gcs-bucket: ${BIGQUERY_GCS_BUCKET:}
+  # Delete temporary files from GCS after successful load (default: true)
+  cleanup-temp-files: ${BIGQUERY_CLEANUP_TEMP_FILES:true}
+  # Prefix for temporary files in GCS bucket
+  gcs-temp-prefix: ${BIGQUERY_GCS_TEMP_PREFIX:temp/events/}
 
 worker:
   batch-size: ${WORKER_BATCH_SIZE:200}
@@ -68,7 +91,7 @@ logging:
   level:
     com.example.ingestion: INFO
     org.springframework.web: INFO
-    org.hibernate.SQL: INFO
+    org.hibernate.SQL: OFF
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] [%X{tenantId}] [%X{eventId}] [%X{outboxId}] %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] [%X{tenantId}] [%X{eventId}] [%X{outboxId}] %logger{36} - %msg%n"

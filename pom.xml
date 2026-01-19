@@ -20,7 +20,8 @@
 
     <properties>
         <java.version>17</java.version>
-        <google-cloud-bigquery.version>2.35.0</google-cloud-bigquery.version>
+        <google-cloud-bigquery.version>2.40.0</google-cloud-bigquery.version>
+        <google-cloud-storage.version>2.40.0</google-cloud-storage.version>
         <jacoco.version>0.8.11</jacoco.version>
     </properties>
 
@@ -69,6 +70,14 @@
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-bigquery</artifactId>
             <version>${google-cloud-bigquery.version}</version>
+        </dependency>
+        
+        <!-- Google Cloud Storage (for LOAD jobs - free tier compatible) -->
+        <!-- Version 2.40.0+ required for getUniverseDomain() method -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-storage</artifactId>
+            <version>${google-cloud-storage.version}</version>
         </dependency>
 
         <!-- Lombok -->

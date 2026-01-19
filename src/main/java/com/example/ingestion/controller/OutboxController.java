@@ -1,7 +1,9 @@
 package com.example.ingestion.controller;
 
+import com.example.ingestion.dto.BigQueryStatusResponse;
 import com.example.ingestion.dto.OutboxSummaryResponse;
 import com.example.ingestion.dto.RetryResponse;
+import com.example.ingestion.service.BigQueryService;
 import com.example.ingestion.service.OutboxService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -16,9 +18,11 @@ import java.time.LocalDateTime;
 public class OutboxController {
 
     private final OutboxService outboxService;
+    private final BigQueryService bigQueryService;
 
-    public OutboxController(OutboxService outboxService) {
+    public OutboxController(OutboxService outboxService, BigQueryService bigQueryService) {
         this.outboxService = outboxService;
+        this.bigQueryService = bigQueryService;
     }
 
     @GetMapping("/summary")
@@ -54,6 +58,30 @@ public class OutboxController {
         log.info("Retrying failed records: tenantId={}, limit={}", tenantId, limit);
         RetryResponse response = outboxService.retryFailed(tenantId, limit);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/bigquery/status")
+    public ResponseEntity<BigQueryStatusResponse> getBigQueryStatus() {
+        log.info("Getting BigQuery status");
+        BigQueryStatusResponse status = bigQueryService.getStatus();
+        return ResponseEntity.ok(status);
+    }
+
+    @GetMapping("/bigquery/verify/{tenantId}/{eventId}")
+    public ResponseEntity<Boolean> verifyEventInBigQuery(
+            @PathVariable String tenantId,
+            @PathVariable String eventId) {
+        log.info("Verifying event in BigQuery: tenantId={}, eventId={}", tenantId, eventId);
+        boolean exists = bigQueryService.verifyEventExists(tenantId, eventId);
+        return ResponseEntity.ok(exists);
+    }
+
+    @GetMapping("/bigquery/count")
+    public ResponseEntity<Long> getBigQueryEventCount(
+            @RequestParam(required = false, defaultValue = "") String tenantId) {
+        log.info("Getting BigQuery event count: tenantId={}", tenantId);
+        long count = bigQueryService.getEventCount(tenantId);
+        return ResponseEntity.ok(count);
     }
 }
 

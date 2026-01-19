@@ -5,6 +5,7 @@ import com.example.ingestion.dto.RetryResponse;
 import com.example.ingestion.entity.EventInbox;
 import com.example.ingestion.entity.EventOutbox;
 import com.example.ingestion.entity.EventOutbox.OutboxStatus;
+import com.example.ingestion.exception.EventNotFoundException;
 import com.example.ingestion.repository.EventInboxRepository;
 import com.example.ingestion.repository.EventOutboxRepository;
 import com.example.ingestion.util.Constants;
@@ -56,7 +57,10 @@ public class OutboxService {
             throw new IllegalArgumentException("From date cannot be after to date");
         }
         
-        outboxValidator.validateTenantId(tenantId);
+        // Validate tenantId only if provided (empty string means all tenants)
+        if (tenantId != null && !tenantId.isEmpty()) {
+            outboxValidator.validateTenantId(tenantId);
+        }
         
         try {
             Long pending = eventOutboxRepository.countByTenantIdAndCreatedAtBetweenAndStatus(
@@ -71,7 +75,7 @@ public class OutboxService {
             Long total = pending + processing + done + failed;
 
             return new OutboxSummaryResponse(
-                    tenantId,
+                    tenantId != null ? tenantId : "",
                     from.toString(),
                     to.toString(),
                     pending,
@@ -81,7 +85,7 @@ public class OutboxService {
                     total
             );
         } catch (DataAccessException e) {
-            log.error("Database error retrieving outbox summary: tenantId={}", tenantId, e);
+            log.error("Database error retrieving outbox summary: tenantId={}, from={}, to={}", tenantId, from, to, e);
             throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
         }
     }
@@ -89,26 +93,43 @@ public class OutboxService {
     @Transactional
     public RetryResponse retryFailed(String tenantId, int limit) {
         outboxValidator.validateRetryLimit(limit);
-        outboxValidator.validateTenantId(tenantId);
+        
+        // Validate tenantId only if provided (empty string means all tenants)
+        if (tenantId != null && !tenantId.isEmpty()) {
+            outboxValidator.validateTenantId(tenantId);
+        }
         
         try {
             Pageable pageable = PageRequest.of(0, limit);
             List<EventOutbox> failedRecords = eventOutboxRepository.findFailedByTenantIdForRetry(
                 tenantId, OutboxStatus.FAILED, pageable);
 
+            if (failedRecords.isEmpty()) {
+                log.info("No failed records found to retry for tenant: {}", tenantId != null ? tenantId : "all");
+                return new RetryResponse(
+                        tenantId != null ? tenantId : "",
+                        0,
+                        "No failed records found to retry"
+                );
+            }
+
             int retriedCount = 0;
             for (EventOutbox outbox : failedRecords) {
+                if (outbox == null) {
+                    continue;
+                }
                 outbox.setStatus(OutboxStatus.PENDING);
                 outbox.setLastError(null);
+                outbox.setRetryCount(0);
                 outbox.setNextRetryAt(LocalDateTime.now());
                 eventOutboxRepository.save(outbox);
                 retriedCount++;
             }
 
-            log.info("Retried {} failed records for tenant: {}", retriedCount, tenantId);
+            log.info("Retried {} failed records for tenant: {}", retriedCount, tenantId != null ? tenantId : "all");
 
             return new RetryResponse(
-                    tenantId,
+                    tenantId != null ? tenantId : "",
                     retriedCount,
                     "Retried " + retriedCount + " failed records"
             );
@@ -120,39 +141,97 @@ public class OutboxService {
 
     @Transactional
     public int claimPendingRows(String instanceId, int lockTtlSeconds, int batchSize) {
-        int claimed = eventOutboxRepository.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
-        if (claimed > 0) {
-            outboxClaimedTotal.increment(claimed);
+        if (instanceId == null || instanceId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Instance ID cannot be null or empty");
         }
-        return claimed;
+        if (lockTtlSeconds <= 0) {
+            throw new IllegalArgumentException("Lock TTL must be greater than 0");
+        }
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("Batch size must be greater than 0");
+        }
+        
+        try {
+            int claimed = eventOutboxRepository.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
+            if (claimed > 0) {
+                outboxClaimedTotal.increment(claimed);
+            }
+            return claimed;
+        } catch (DataAccessException e) {
+            log.error("Database error claiming pending rows: instanceId={}, lockTtlSeconds={}, batchSize={}", 
+                instanceId, lockTtlSeconds, batchSize, e);
+            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
+        }
     }
 
     @Transactional
     public List<EventOutbox> getClaimedRows(String instanceId, int lockTtlSeconds) {
-        List<Object[]> rawRows = eventOutboxRepository.findClaimedRows(instanceId, lockTtlSeconds);
-        return rawRows.stream()
-                .map(row -> {
-                    Long id = ((Number) row[0]).longValue();
-                    return eventOutboxRepository.findById(id).orElse(null);
-                })
-                .filter(outbox -> outbox != null)
-                .toList();
+        if (instanceId == null || instanceId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Instance ID cannot be null or empty");
+        }
+        if (lockTtlSeconds <= 0) {
+            throw new IllegalArgumentException("Lock TTL must be greater than 0");
+        }
+        
+        try {
+            List<Object[]> rawRows = eventOutboxRepository.findClaimedRows(instanceId, lockTtlSeconds);
+            if (rawRows == null || rawRows.isEmpty()) {
+                return List.of();
+            }
+            
+            return rawRows.stream()
+                    .filter(row -> row != null && row.length > 0 && row[0] != null)
+                    .map(row -> {
+                        try {
+                            Long id = ((Number) row[0]).longValue();
+                            return eventOutboxRepository.findById(id).orElse(null);
+                        } catch (Exception e) {
+                            log.warn("Error converting row to EventOutbox: {}", e.getMessage());
+                            return null;
+                        }
+                    })
+                    .filter(outbox -> outbox != null)
+                    .toList();
+        } catch (DataAccessException e) {
+            log.error("Database error retrieving claimed rows: instanceId={}, lockTtlSeconds={}", instanceId, lockTtlSeconds, e);
+            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
+        }
     }
 
     @Transactional
     public void processOutboxRecord(EventOutbox outbox, BigQueryService bigQueryService, int maxRetryCount) {
+        if (outbox == null) {
+            log.error("Cannot process null outbox record");
+            return;
+        }
+        if (bigQueryService == null) {
+            log.error("BigQueryService cannot be null");
+            throw new IllegalArgumentException("BigQueryService cannot be null");
+        }
+        if (maxRetryCount < 0) {
+            throw new IllegalArgumentException("Max retry count cannot be negative");
+        }
+        
         // Set MDC for logging
         MDC.put("tenantId", outbox.getTenantId());
         MDC.put("eventId", outbox.getEventId());
         MDC.put("outboxId", String.valueOf(outbox.getId()));
         
         try {
+            // Validate outbox state
+            if (outbox.getTenantId() == null || outbox.getTenantId().trim().isEmpty()) {
+                throw new IllegalArgumentException("Outbox record has invalid tenantId");
+            }
+            if (outbox.getEventId() == null || outbox.getEventId().trim().isEmpty()) {
+                throw new IllegalArgumentException("Outbox record has invalid eventId");
+            }
+            
             // Get associated event
             EventInbox eventInbox = eventInboxRepository.findByTenantIdAndEventId(
                 outbox.getTenantId(), outbox.getEventId())
-                .orElseThrow(() -> new RuntimeException("Event not found: " + outbox.getEventId()));
+                .orElseThrow(() -> new EventNotFoundException(outbox.getTenantId(), outbox.getEventId()));
 
-            // Stream insert to BigQuery
+            // Insert to BigQuery
             bigQueryService.streamInsert(eventInbox);
 
             // Update status to DONE
@@ -160,11 +239,31 @@ public class OutboxService {
             outbox.setLastError(null);
             outbox.setLockedBy(null);
             outbox.setLockedAt(null);
-            eventOutboxRepository.save(outbox);
+            try {
+                eventOutboxRepository.save(outbox);
+            } catch (DataAccessException e) {
+                log.error("Database error saving outbox record after successful processing: eventId={}, outboxId={}", 
+                    outbox.getEventId(), outbox.getId(), e);
+                throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
+            }
 
             outboxDoneTotal.increment();
             log.info("Successfully processed outbox record: eventId={}, outboxId={}", 
                 outbox.getEventId(), outbox.getId());
+        } catch (EventNotFoundException e) {
+            log.error("Event not found for outbox record: eventId={}, outboxId={}", 
+                outbox.getEventId(), outbox.getId(), e);
+            outbox.setStatus(OutboxStatus.FAILED);
+            outbox.setLastError(truncateError("Event not found: " + e.getMessage()));
+            outbox.setLockedBy(null);
+            outbox.setLockedAt(null);
+            outboxFailedTotal.increment();
+            try {
+                eventOutboxRepository.save(outbox);
+            } catch (DataAccessException dbEx) {
+                log.error("Database error saving outbox record after error: eventId={}, outboxId={}", 
+                    outbox.getEventId(), outbox.getId(), dbEx);
+            }
         } catch (Exception e) {
             log.error("Error processing outbox record: eventId={}, outboxId={}, error={}", 
                 outbox.getEventId(), outbox.getId(), e.getMessage(), e);
@@ -193,7 +292,13 @@ public class OutboxService {
                     outbox.getEventId(), outbox.getId(), outbox.getRetryCount(), outbox.getNextRetryAt());
             }
             
-            eventOutboxRepository.save(outbox);
+            try {
+                eventOutboxRepository.save(outbox);
+            } catch (DataAccessException dbEx) {
+                log.error("Database error saving outbox record after failure: eventId={}, outboxId={}", 
+                    outbox.getEventId(), outbox.getId(), dbEx);
+                throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, dbEx);
+            }
         } finally {
             MDC.remove("tenantId");
             MDC.remove("eventId");
