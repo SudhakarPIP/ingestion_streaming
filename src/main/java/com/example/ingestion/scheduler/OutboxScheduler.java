@@ -38,6 +38,20 @@ public class OutboxScheduler {
                initialDelayString = "${scheduler.outbox.initial-delay:10000}")
     public void processOutboxRecords() {
         try {
+            // Validate configuration
+            if (instanceId == null || instanceId.trim().isEmpty()) {
+                log.error("Invalid instance ID configuration: {}", instanceId);
+                return;
+            }
+            if (batchSize <= 0) {
+                log.error("Invalid batch size configuration: {}", batchSize);
+                return;
+            }
+            if (lockTtlSeconds <= 0) {
+                log.error("Invalid lock TTL configuration: {}", lockTtlSeconds);
+                return;
+            }
+            
             // Step 1: Claim rows atomically
             int claimedCount = outboxService.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
             
@@ -51,17 +65,45 @@ public class OutboxScheduler {
             // Step 2: Fetch claimed rows
             List<EventOutbox> claimedRows = outboxService.getClaimedRows(instanceId, lockTtlSeconds);
             
+            if (claimedRows == null || claimedRows.isEmpty()) {
+                log.warn("No claimed rows retrieved after claiming {} records", claimedCount);
+                return;
+            }
+
             log.info("Processing {} claimed outbox records", claimedRows.size());
 
             // Step 3: Process each claimed row
+            int processedCount = 0;
+            int failedCount = 0;
             for (EventOutbox outbox : claimedRows) {
-                outboxService.processOutboxRecord(outbox, bigQueryService, maxRetryCount);
+                if (outbox == null) {
+                    log.warn("Skipping null outbox record");
+                    continue;
+                }
+                try {
+                    outboxService.processOutboxRecord(outbox, bigQueryService, maxRetryCount);
+                    processedCount++;
+                } catch (Exception e) {
+                    failedCount++;
+                    log.error("Failed to process outbox record: outboxId={}, error={}", 
+                        outbox.getId(), e.getMessage(), e);
+                }
+            }
+            
+            // Step 4: Flush any pending BigQuery batches (for batch loading mode)
+            try {
+                bigQueryService.flushBatch();
+            } catch (Exception e) {
+                log.warn("Error flushing BigQuery batch: {}", e.getMessage());
             }
 
-            log.info("Completed processing batch of {} outbox records", claimedRows.size());
+            log.info("Completed processing: {} succeeded, {} failed out of {} claimed records", 
+                processedCount, failedCount, claimedRows.size());
 
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid configuration in outbox scheduler: {}", e.getMessage(), e);
         } catch (Exception e) {
-            log.error("Error in outbox scheduler: {}", e.getMessage(), e);
+            log.error("Unexpected error in outbox scheduler: {}", e.getMessage(), e);
         }
     }
 }
