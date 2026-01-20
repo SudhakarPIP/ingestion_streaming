@@ -38,7 +38,6 @@ public class OutboxScheduler {
                initialDelayString = "${scheduler.outbox.initial-delay:10000}")
     public void processOutboxRecords() {
         try {
-            // Validate configuration
             if (instanceId == null || instanceId.trim().isEmpty()) {
                 log.error("Invalid instance ID configuration: {}", instanceId);
                 return;
@@ -52,7 +51,6 @@ public class OutboxScheduler {
                 return;
             }
             
-            // Step 1: Claim rows atomically
             int claimedCount = outboxService.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
             
             if (claimedCount == 0) {
@@ -62,7 +60,6 @@ public class OutboxScheduler {
 
             log.info("Claimed {} outbox records for processing", claimedCount);
 
-            // Step 2: Fetch claimed rows
             List<EventOutbox> claimedRows = outboxService.getClaimedRows(instanceId, lockTtlSeconds);
             
             if (claimedRows == null || claimedRows.isEmpty()) {
@@ -72,7 +69,6 @@ public class OutboxScheduler {
 
             log.info("Processing {} claimed outbox records", claimedRows.size());
 
-            // Step 3: Process each claimed row
             int processedCount = 0;
             int failedCount = 0;
             for (EventOutbox outbox : claimedRows) {
@@ -90,7 +86,6 @@ public class OutboxScheduler {
                 }
             }
             
-            // Step 4: Flush any pending BigQuery batches (for batch loading mode)
             try {
                 bigQueryService.flushBatch();
             } catch (Exception e) {

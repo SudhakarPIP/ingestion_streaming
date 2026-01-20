@@ -57,7 +57,6 @@ public class OutboxService {
             throw new IllegalArgumentException("From date cannot be after to date");
         }
         
-        // Validate tenantId only if provided (empty string means all tenants)
         if (tenantId != null && !tenantId.isEmpty()) {
             outboxValidator.validateTenantId(tenantId);
         }
@@ -94,49 +93,43 @@ public class OutboxService {
     public RetryResponse retryFailed(String tenantId, int limit) {
         outboxValidator.validateRetryLimit(limit);
         
-        // Validate tenantId only if provided (empty string means all tenants)
         if (tenantId != null && !tenantId.isEmpty()) {
             outboxValidator.validateTenantId(tenantId);
         }
         
-        try {
-            Pageable pageable = PageRequest.of(0, limit);
-            List<EventOutbox> failedRecords = eventOutboxRepository.findFailedByTenantIdForRetry(
-                tenantId, OutboxStatus.FAILED, pageable);
+        Pageable pageable = PageRequest.of(0, limit);
+        List<EventOutbox> failedRecords = eventOutboxRepository.findFailedByTenantIdForRetry(
+            tenantId, OutboxStatus.FAILED, pageable);
 
-            if (failedRecords.isEmpty()) {
-                log.info("No failed records found to retry for tenant: {}", tenantId != null ? tenantId : "all");
-                return new RetryResponse(
-                        tenantId != null ? tenantId : "",
-                        0,
-                        "No failed records found to retry"
-                );
-            }
-
-            int retriedCount = 0;
-            for (EventOutbox outbox : failedRecords) {
-                if (outbox == null) {
-                    continue;
-                }
-                outbox.setStatus(OutboxStatus.PENDING);
-                outbox.setLastError(null);
-                outbox.setRetryCount(0);
-                outbox.setNextRetryAt(LocalDateTime.now());
-                eventOutboxRepository.save(outbox);
-                retriedCount++;
-            }
-
-            log.info("Retried {} failed records for tenant: {}", retriedCount, tenantId != null ? tenantId : "all");
-
+        if (failedRecords.isEmpty()) {
+            log.info("No failed records found to retry for tenant: {}", tenantId != null ? tenantId : "all");
             return new RetryResponse(
                     tenantId != null ? tenantId : "",
-                    retriedCount,
-                    "Retried " + retriedCount + " failed records"
+                    0,
+                    "No failed records found to retry"
             );
-        } catch (DataAccessException e) {
-            log.error("Database error retrying failed records: tenantId={}, limit={}", tenantId, limit, e);
-            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
         }
+
+        int retriedCount = 0;
+        for (EventOutbox outbox : failedRecords) {
+            if (outbox == null) {
+                continue;
+            }
+            outbox.setStatus(OutboxStatus.PENDING);
+            outbox.setLastError(null);
+            outbox.setRetryCount(0);
+            outbox.setNextRetryAt(LocalDateTime.now());
+            eventOutboxRepository.save(outbox);
+            retriedCount++;
+        }
+
+        log.info("Retried {} failed records for tenant: {}", retriedCount, tenantId != null ? tenantId : "all");
+
+        return new RetryResponse(
+                tenantId != null ? tenantId : "",
+                retriedCount,
+                "Retried " + retriedCount + " failed records"
+        );
     }
 
     @Transactional
@@ -151,17 +144,11 @@ public class OutboxService {
             throw new IllegalArgumentException("Batch size must be greater than 0");
         }
         
-        try {
-            int claimed = eventOutboxRepository.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
-            if (claimed > 0) {
-                outboxClaimedTotal.increment(claimed);
-            }
-            return claimed;
-        } catch (DataAccessException e) {
-            log.error("Database error claiming pending rows: instanceId={}, lockTtlSeconds={}, batchSize={}", 
-                instanceId, lockTtlSeconds, batchSize, e);
-            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
+        int claimed = eventOutboxRepository.claimPendingRows(instanceId, lockTtlSeconds, batchSize);
+        if (claimed > 0) {
+            outboxClaimedTotal.increment(claimed);
         }
+        return claimed;
     }
 
     @Transactional
@@ -173,29 +160,24 @@ public class OutboxService {
             throw new IllegalArgumentException("Lock TTL must be greater than 0");
         }
         
-        try {
-            List<Object[]> rawRows = eventOutboxRepository.findClaimedRows(instanceId, lockTtlSeconds);
-            if (rawRows == null || rawRows.isEmpty()) {
-                return List.of();
-            }
-            
-            return rawRows.stream()
-                    .filter(row -> row != null && row.length > 0 && row[0] != null)
-                    .map(row -> {
-                        try {
-                            Long id = ((Number) row[0]).longValue();
-                            return eventOutboxRepository.findById(id).orElse(null);
-                        } catch (Exception e) {
-                            log.warn("Error converting row to EventOutbox: {}", e.getMessage());
-                            return null;
-                        }
-                    })
-                    .filter(outbox -> outbox != null)
-                    .toList();
-        } catch (DataAccessException e) {
-            log.error("Database error retrieving claimed rows: instanceId={}, lockTtlSeconds={}", instanceId, lockTtlSeconds, e);
-            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
+        List<Object[]> rawRows = eventOutboxRepository.findClaimedRows(instanceId, lockTtlSeconds);
+        if (rawRows == null || rawRows.isEmpty()) {
+            return List.of();
         }
+        
+        return rawRows.stream()
+                .filter(row -> row != null && row.length > 0 && row[0] != null)
+                .map(row -> {
+                    try {
+                        Long id = ((Number) row[0]).longValue();
+                        return eventOutboxRepository.findById(id).orElse(null);
+                    } catch (Exception e) {
+                        log.warn("Error converting row to EventOutbox: {}", e.getMessage());
+                        return null;
+                    }
+                })
+                .filter(outbox -> outbox != null)
+                .toList();
     }
 
     @Transactional
@@ -212,13 +194,11 @@ public class OutboxService {
             throw new IllegalArgumentException("Max retry count cannot be negative");
         }
         
-        // Set MDC for logging
         MDC.put("tenantId", outbox.getTenantId());
         MDC.put("eventId", outbox.getEventId());
         MDC.put("outboxId", String.valueOf(outbox.getId()));
         
         try {
-            // Validate outbox state
             if (outbox.getTenantId() == null || outbox.getTenantId().trim().isEmpty()) {
                 throw new IllegalArgumentException("Outbox record has invalid tenantId");
             }
@@ -226,26 +206,17 @@ public class OutboxService {
                 throw new IllegalArgumentException("Outbox record has invalid eventId");
             }
             
-            // Get associated event
             EventInbox eventInbox = eventInboxRepository.findByTenantIdAndEventId(
                 outbox.getTenantId(), outbox.getEventId())
                 .orElseThrow(() -> new EventNotFoundException(outbox.getTenantId(), outbox.getEventId()));
 
-            // Insert to BigQuery
             bigQueryService.streamInsert(eventInbox);
 
-            // Update status to DONE
             outbox.setStatus(OutboxStatus.DONE);
             outbox.setLastError(null);
             outbox.setLockedBy(null);
             outbox.setLockedAt(null);
-            try {
-                eventOutboxRepository.save(outbox);
-            } catch (DataAccessException e) {
-                log.error("Database error saving outbox record after successful processing: eventId={}, outboxId={}", 
-                    outbox.getEventId(), outbox.getId(), e);
-                throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
-            }
+            eventOutboxRepository.save(outbox);
 
             outboxDoneTotal.increment();
             log.info("Successfully processed outbox record: eventId={}, outboxId={}", 
@@ -258,12 +229,7 @@ public class OutboxService {
             outbox.setLockedBy(null);
             outbox.setLockedAt(null);
             outboxFailedTotal.increment();
-            try {
-                eventOutboxRepository.save(outbox);
-            } catch (DataAccessException dbEx) {
-                log.error("Database error saving outbox record after error: eventId={}, outboxId={}", 
-                    outbox.getEventId(), outbox.getId(), dbEx);
-            }
+            eventOutboxRepository.save(outbox);
         } catch (Exception e) {
             log.error("Error processing outbox record: eventId={}, outboxId={}, error={}", 
                 outbox.getEventId(), outbox.getId(), e.getMessage(), e);
@@ -271,7 +237,6 @@ public class OutboxService {
             int newRetryCount = outbox.getRetryCount() + 1;
             
             if (newRetryCount >= maxRetryCount) {
-                // Permanent failure - mark as FAILED with no retry
                 outbox.setStatus(OutboxStatus.FAILED);
                 outbox.setLastError(truncateError(e.getMessage()));
                 outbox.setLockedBy(null);
@@ -280,7 +245,6 @@ public class OutboxService {
                 log.warn("Outbox record exceeded max retry count: eventId={}, outboxId={}, retryCount={}", 
                     outbox.getEventId(), outbox.getId(), newRetryCount);
             } else {
-                // Transient failure - schedule retry with exponential backoff
                 outbox.setStatus(OutboxStatus.FAILED);
                 outbox.setLastError(truncateError(e.getMessage()));
                 outbox.setRetryCount(newRetryCount);
@@ -292,13 +256,7 @@ public class OutboxService {
                     outbox.getEventId(), outbox.getId(), outbox.getRetryCount(), outbox.getNextRetryAt());
             }
             
-            try {
-                eventOutboxRepository.save(outbox);
-            } catch (DataAccessException dbEx) {
-                log.error("Database error saving outbox record after failure: eventId={}, outboxId={}", 
-                    outbox.getEventId(), outbox.getId(), dbEx);
-                throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, dbEx);
-            }
+            eventOutboxRepository.save(outbox);
         } finally {
             MDC.remove("tenantId");
             MDC.remove("eventId");

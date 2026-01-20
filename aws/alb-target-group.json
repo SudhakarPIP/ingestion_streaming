@@ -1,0 +1,27 @@
+{
+  "Name": "ingestion-streaming-dev-tg",
+  "Protocol": "HTTP",
+  "Port": 8080,
+  "VpcId": "vpc-xxxxxxxx",
+  "HealthCheckProtocol": "HTTP",
+  "HealthCheckPath": "/actuator/health",
+  "HealthCheckIntervalSeconds": 30,
+  "HealthCheckTimeoutSeconds": 5,
+  "HealthyThresholdCount": 2,
+  "UnhealthyThresholdCount": 3,
+  "Matcher": {
+    "HttpCode": "200"
+  },
+  "TargetType": "ip",
+  "Tags": [
+    {
+      "Key": "Environment",
+      "Value": "dev"
+    },
+    {
+      "Key": "Application",
+      "Value": "ingestion-streaming"
+    }
+  ]
+}
+

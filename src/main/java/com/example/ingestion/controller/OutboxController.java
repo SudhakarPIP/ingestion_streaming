@@ -33,12 +33,15 @@ public class OutboxController {
             @RequestParam(required = false) 
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to) {
         
-        // Default values
         if (from == null) {
             from = LocalDateTime.now().minusDays(7);
         }
         if (to == null) {
             to = LocalDateTime.now();
+        }
+        
+        if (from.isAfter(to)) {
+            throw new IllegalArgumentException("'from' date cannot be after 'to' date");
         }
 
         log.info("Getting outbox summary: tenantId={}, from={}, to={}", tenantId, from, to);

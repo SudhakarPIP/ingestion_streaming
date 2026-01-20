@@ -1,0 +1,63 @@
+{
+  "family": "ingestion-streaming-dev",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "containerDefinitions": [
+    {
+      "name": "ingestion-streaming",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ingestion-streaming:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "SPRING_PROFILES_ACTIVE",
+          "value": "dev"
+        },
+        {
+          "name": "WORKER_INSTANCE_ID",
+          "value": "ecs-fargate"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "SPRING_DATASOURCE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:dev/mysql/password"
+        },
+        {
+          "name": "GOOGLE_APPLICATION_CREDENTIALS",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:dev/bigquery/credentials"
+        },
+        {
+          "name": "BIGQUERY_PROJECT_ID",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/dev/bigquery/project-id"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:8080/actuator/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ingestion-streaming-dev",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
+

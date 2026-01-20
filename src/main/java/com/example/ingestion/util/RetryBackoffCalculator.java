@@ -20,7 +20,6 @@ public class RetryBackoffCalculator {
                 minutes = 60;
                 break;
             default:
-                // After retry 3, keep at 60 minutes
                 minutes = 60;
                 break;
         }
