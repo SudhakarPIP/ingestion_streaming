@@ -1,7 +1,6 @@
 package com.example.ingestion.exception;
 
 import com.example.ingestion.dto.ErrorResponse;
-import com.example.ingestion.exception.ValidationException;
 import com.example.ingestion.util.Constants;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -195,22 +194,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
     
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<ErrorResponse> handleRuntimeException(
-            RuntimeException ex, HttpServletRequest request) {
-        log.error("Runtime exception: {}", ex.getMessage(), ex);
-        
-        ErrorResponse response = new ErrorResponse(
-                "Internal server error",
-                ex.getMessage(),
-                LocalDateTime.now(),
-                request.getRequestURI(),
-                MDC.get("correlationId")
-        );
-        
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-    }
-
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleException(
             Exception ex, HttpServletRequest request) {

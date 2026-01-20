@@ -54,7 +54,6 @@ public class EventService {
     public EventResponse ingestEvent(EventRequest request) {
         eventValidator.validate(request);
         
-        // Check idempotency
         if (eventInboxRepository.existsByTenantIdAndEventId(request.tenantId(), request.eventId())) {
             log.warn("Event already exists: tenantId={}, eventId={}", request.tenantId(), request.eventId());
             EventInbox existingEvent = eventInboxRepository.findByTenantIdAndEventId(
@@ -63,7 +62,6 @@ public class EventService {
             return toResponse(existingEvent, outbox);
         }
 
-        // Create event
         String payloadJson;
         try {
             payloadJson = objectMapper.writeValueAsString(request.payload());
@@ -94,10 +92,8 @@ public class EventService {
         
         MDC.put("tenantId", eventInbox.getTenantId());
         MDC.put("eventId", eventInbox.getEventId());
-        
         log.info("Event saved: tenantId={}, eventId={}", eventInbox.getTenantId(), eventInbox.getEventId());
 
-        // Create outbox entry (only if not already exists)
         EventOutbox outbox = null;
         try {
             if (!eventOutboxRepository.existsByEventId(eventInbox.getEventId())) {
@@ -149,14 +145,8 @@ public class EventService {
             throw new IllegalArgumentException("Event ID cannot be null or empty");
         }
         
-        EventInbox eventInbox;
-        try {
-            eventInbox = eventInboxRepository.findByTenantIdAndEventId(tenantId, eventId)
-                    .orElseThrow(() -> new EventNotFoundException(tenantId, eventId));
-        } catch (DataAccessException e) {
-            log.error("Database error retrieving event: tenantId={}, eventId={}", tenantId, eventId, e);
-            throw new IllegalStateException(Constants.ErrorMessages.DATABASE_ERROR, e);
-        }
+        EventInbox eventInbox = eventInboxRepository.findByTenantIdAndEventId(tenantId, eventId)
+                .orElseThrow(() -> new EventNotFoundException(tenantId, eventId));
         
         EventOutbox outbox = eventOutboxRepository.findByEventId(eventId).orElse(null);
         return toResponse(eventInbox, outbox);
@@ -165,8 +155,7 @@ public class EventService {
     private EventResponse toResponse(EventInbox eventInbox, EventOutbox outbox) {
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> payload = objectMapper.readValue(
-                eventInbox.getPayloadJson(), Map.class);
+            Map<String, Object> payload = objectMapper.readValue(eventInbox.getPayloadJson(), Map.class);
 
             return new EventResponse(
                     eventInbox.getTenantId(),

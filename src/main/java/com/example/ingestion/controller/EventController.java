@@ -38,7 +38,9 @@ public class EventController {
     }
 
     @GetMapping("/{tenantId}/{eventId}")
-    public ResponseEntity<EventResponse> getEvent(@PathVariable String tenantId, @PathVariable String eventId) {
+    public ResponseEntity<EventResponse> getEvent(
+            @PathVariable String tenantId, 
+            @PathVariable String eventId) {
         log.info("Getting event: tenantId={}, eventId={}", tenantId, eventId);
 
         EventResponse response = eventService.getEvent(tenantId, eventId);

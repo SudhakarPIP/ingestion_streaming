@@ -64,11 +64,8 @@ public class BigQueryService {
     @Value("${bigquery.cleanup-temp-files:true}")
     private boolean cleanupTempFiles;
 
-    // Batch collection for batch loading mode
     private final Queue<EventInbox> batchQueue = new ConcurrentLinkedQueue<>();
     private final ReentrantLock batchLock = new ReentrantLock();
-    
-    // Flag to track if BigQuery is unavailable (free tier detected)
     private volatile boolean bigQueryUnavailable = false;
 
     public BigQueryService(BigQuery bigQuery,
@@ -85,52 +82,35 @@ public class BigQueryService {
 
     @PostConstruct
     public void initialize() {
-        log.info("Initializing BigQuery service - ensuring dataset and table exist...");
+        log.info("Initializing BigQuery service");
         if (useLoadJobs) {
-            log.info("✅ BigQuery loading mode: LOAD JOBS with Cloud Storage (FREE TIER COMPATIBLE - no billing required)");
+            log.info("BigQuery loading mode: LOAD JOBS with Cloud Storage");
             try {
                 ensureGcsBucketExists();
                 log.info("Using Cloud Storage bucket: {}", gcsBucket);
             } catch (Exception e) {
-                log.error("❌ Failed to initialize GCS bucket: {}", e.getMessage());
-                log.error("   Error details: {}", e.getClass().getSimpleName());
-                if (e.getCause() != null) {
-                    log.error("   Caused by: {}", e.getCause().getMessage());
-                }
-                log.error("   LOAD jobs will fail until this is resolved.");
-                log.error("   Possible causes:");
-                log.error("   1. Service account lacks Storage Admin role");
-                log.error("   2. Invalid bucket name or bucket name already taken");
-                log.error("   3. Network/authentication issues with GCP");
-                log.error("   To continue without BigQuery, set: bigquery.skip-if-unavailable=true");
-                
-                // Don't fail startup - mark as unavailable and try again later
-                log.warn("   Continuing startup. Will retry GCS bucket creation on first use.");
+                log.error("Failed to initialize GCS bucket: {}", e.getMessage(), e);
+                log.warn("Continuing startup. Will retry GCS bucket creation on first use. Set bigquery.skip-if-unavailable=true to skip BigQuery operations.");
                 bigQueryUnavailable = true;
             }
         } else if (useBatchLoading) {
-            log.info("BigQuery loading mode: BATCH LOADING (streaming API - requires billing)");
+            log.info("BigQuery loading mode: BATCH LOADING (requires billing)");
         } else {
             log.info("BigQuery loading mode: STREAMING (requires paid account)");
         }
         if (skipIfUnavailable) {
-            log.warn("⚠️  BigQuery skip-if-unavailable is enabled. Events will be marked DONE without BigQuery insertion if billing is not enabled.");
+            log.warn("BigQuery skip-if-unavailable is enabled. Events will be marked DONE without BigQuery insertion if unavailable.");
         }
         try {
             ensureTableExists();
         } catch (Exception e) {
-            log.error("❌ Failed to ensure BigQuery table exists: {}", e.getMessage());
-            log.error("   Error details: {}", e.getClass().getSimpleName());
-            if (e.getCause() != null) {
-                log.error("   Caused by: {}", e.getCause().getMessage());
-            }
+            log.error("Failed to ensure BigQuery table exists: {}", e.getMessage(), e);
             if (!skipIfUnavailable) {
-                log.warn("   Continuing startup. Table will be created on first use.");
-                bigQueryUnavailable = true;
+                log.warn("Continuing startup. Table will be created on first use.");
             } else {
-                log.warn("   Continuing with skip-if-unavailable enabled. BigQuery operations will be skipped.");
-                bigQueryUnavailable = true;
+                log.warn("Continuing with skip-if-unavailable enabled. BigQuery operations will be skipped.");
             }
+            bigQueryUnavailable = true;
         }
     }
 
@@ -145,42 +125,34 @@ public class BigQueryService {
             throw new IllegalArgumentException("EventInbox eventId cannot be null or empty");
         }
         
-        // Check if BigQuery is unavailable and we should skip
         if (bigQueryUnavailable && skipIfUnavailable) {
-            log.warn("⚠️ Skipping BigQuery insertion for event {} (BigQuery unavailable, skip-if-unavailable=true). " +
-                    "Event will be marked DONE without BigQuery insertion.", eventInbox.getEventId());
-            bigqueryInsertSuccessTotal.increment(); // Count as success since we're intentionally skipping
+            log.warn("Skipping BigQuery insertion for event {} (BigQuery unavailable, skip-if-unavailable=true)", 
+                eventInbox.getEventId());
+            bigqueryInsertSuccessTotal.increment();
             return;
         }
         
-        // If BigQuery is unavailable but skip is false, try to recover
         if (bigQueryUnavailable && !skipIfUnavailable) {
             log.info("BigQuery was marked unavailable, attempting to recover for event: {}", eventInbox.getEventId());
-            // Reset flag and try again - the batchLoadWithLoadJob will retry bucket creation
             bigQueryUnavailable = false;
         }
         
         try {
             if (useLoadJobs) {
-                // Use LOAD jobs via Cloud Storage (free tier compatible)
                 addToBatch(eventInbox);
             } else if (useBatchLoading) {
-                // Use batch streaming (still requires paid account)
                 addToBatch(eventInbox);
             } else {
-                // Use streaming insert (requires paid account)
                 streamInsertDirect(eventInbox);
             }
         } catch (BigQueryException e) {
-            // Check if it's a free tier error
             if (isFreeTierError(e) && skipIfUnavailable) {
-                log.warn("BigQuery free tier detected. Skipping BigQuery operations for remaining events. " +
-                         "Enable billing on your GCP project to use BigQuery. Event: {}", eventInbox.getEventId());
+                log.warn("BigQuery free tier detected. Skipping BigQuery operations. Enable billing to use BigQuery. Event: {}", 
+                    eventInbox.getEventId());
                 bigQueryUnavailable = true;
-                bigqueryInsertSuccessTotal.increment(); // Count as success since we're gracefully skipping
+                bigqueryInsertSuccessTotal.increment();
                 return;
             }
-            // Re-throw if we shouldn't skip or it's a different error
             throw e;
         }
     }
@@ -218,7 +190,6 @@ public class BigQueryService {
         List<EventInbox> eventsToLoad = new ArrayList<>();
         batchLock.lock();
         try {
-            // Drain the queue - flush ALL pending events, not just up to batchSize
             while (!batchQueue.isEmpty()) {
                 EventInbox event = batchQueue.poll();
                 if (event != null) {
@@ -233,11 +204,10 @@ public class BigQueryService {
             return;
         }
 
-        // Check if BigQuery is unavailable before attempting load
         if (bigQueryUnavailable && skipIfUnavailable) {
             log.warn("Skipping BigQuery batch load for {} events (BigQuery unavailable, skip-if-unavailable=true)", 
                 eventsToLoad.size());
-            bigqueryInsertSuccessTotal.increment(eventsToLoad.size()); // Count as success since we're gracefully skipping
+            bigqueryInsertSuccessTotal.increment(eventsToLoad.size());
             return;
         }
 
@@ -249,7 +219,6 @@ public class BigQueryService {
             bigqueryInsertFailureTotal.increment(eventsToLoad.size());
             log.error("Error batch loading {} events to BigQuery: {}", eventsToLoad.size(), e.getMessage(), e);
             
-            // If it's a skip scenario, handle gracefully
             if (skipIfUnavailable) {
                 log.warn("BigQuery batch load failed, but skip-if-unavailable=true. Marking events as processed.");
                 bigQueryUnavailable = true;
@@ -266,17 +235,14 @@ public class BigQueryService {
             throw new IllegalArgumentException("Events list cannot be null or empty");
         }
         
-        // Use LOAD jobs with Cloud Storage if enabled (free tier compatible)
         if (useLoadJobs) {
             batchLoadWithLoadJob(events);
             return;
         }
         
-        // Otherwise use streaming insert (requires billing)
         TableId tableId = TableId.of(projectId, datasetName, tableName);
         
         try {
-            // Convert events to BigQuery rows
             List<InsertAllRequest.RowToInsert> rows = new ArrayList<>();
             for (EventInbox eventInbox : events) {
                 if (eventInbox == null) {
@@ -298,22 +264,18 @@ public class BigQueryService {
                 return;
             }
             
-            // Use insertAll with multiple rows in a single batch (streaming API)
             InsertAllRequest.Builder requestBuilder = InsertAllRequest.newBuilder(tableId);
             for (InsertAllRequest.RowToInsert row : rows) {
                 requestBuilder.addRow(row.getId(), row.getContent());
             }
             InsertAllRequest request = requestBuilder.setSkipInvalidRows(false).build();
             
-            // Execute batch insert
             InsertAllResponse response = bigQuery.insertAll(request);
             
-            // Handle errors
             if (response.hasErrors()) {
                 Map<Long, java.util.List<BigQueryError>> errors = response.getInsertErrors();
                 log.error("Errors occurred while batch loading {} events: {} errors", events.size(), errors.size());
                 
-                // Log detailed errors
                 errors.forEach((index, errorList) -> {
                     errorList.forEach(error -> {
                         log.error("Row {} error in batch: {} - {}", index, error.getReason(), error.getMessage());
@@ -327,7 +289,6 @@ public class BigQueryService {
             log.info("Successfully batch loaded {} events to BigQuery", events.size());
             
         } catch (com.google.cloud.bigquery.BigQueryException e) {
-            // If free tier error, handle gracefully if skip is enabled
             if (e.getCode() == 403 && e.getMessage() != null && 
                 e.getMessage().contains("Streaming insert is not allowed in the free tier")) {
                 String errorMsg = String.format(
@@ -338,8 +299,8 @@ public class BigQueryService {
                     log.warn("BigQuery free tier detected during batch load. Skipping BigQuery operations. " +
                              "Set bigquery.use-load-jobs=true to use LOAD jobs (free tier compatible).");
                     bigQueryUnavailable = true;
-                    bigqueryInsertSuccessTotal.increment(events.size()); // Count as success
-                    return; // Gracefully skip
+                    bigqueryInsertSuccessTotal.increment(events.size());
+                    return;
                 }
                 
                 log.error(errorMsg);
@@ -347,7 +308,6 @@ public class BigQueryService {
             }
             throw new BigQueryException("Failed to batch load events to BigQuery: " + e.getMessage(), e);
         } catch (Exception e) {
-            // Check if the wrapped exception is a free tier error
             if (e instanceof BigQueryException && isFreeTierError((BigQueryException) e) && skipIfUnavailable) {
                 log.warn("BigQuery free tier detected during batch load. Skipping BigQuery operations.");
                 bigQueryUnavailable = true;
@@ -363,11 +323,10 @@ public class BigQueryService {
      * This method works without billing enabled
      */
     private void batchLoadWithLoadJob(List<EventInbox> events) {
-        // Always ensure bucket exists before attempting load
         try {
             log.debug("Ensuring GCS bucket exists before LOAD job...");
             ensureGcsBucketExists();
-            bigQueryUnavailable = false; // Reset if successful
+            bigQueryUnavailable = false;
             log.debug("GCS bucket verified/created: {}", gcsBucket);
         } catch (Exception e) {
             log.error("Failed to ensure GCS bucket exists: {}", e.getMessage(), e);
@@ -385,7 +344,6 @@ public class BigQueryService {
         BlobId blobId = null;
         
         try {
-            // Step 1: Convert events to JSON Lines format (newline-delimited JSON)
             StringBuilder jsonLines = new StringBuilder();
             for (EventInbox eventInbox : events) {
                 if (eventInbox == null) {
@@ -397,7 +355,6 @@ public class BigQueryService {
                 } catch (Exception e) {
                     log.error("Error converting event to JSON: eventId={}, error={}", 
                         eventInbox.getEventId(), e.getMessage(), e);
-                    // Continue with other events
                 }
             }
             
@@ -406,7 +363,6 @@ public class BigQueryService {
                 return;
             }
             
-            // Step 2: Upload JSON to Cloud Storage
             byte[] jsonData = jsonLines.toString().getBytes(StandardCharsets.UTF_8);
             blobId = BlobId.of(gcsBucket, gcsFileName);
             BlobInfo blobInfo = BlobInfo.newBuilder(blobId)
@@ -416,29 +372,24 @@ public class BigQueryService {
             storage.create(blobInfo, jsonData);
             log.debug("Uploaded {} events to Cloud Storage: {}", events.size(), gcsUri);
             
-            // Step 3: Create LOAD job to load from Cloud Storage to BigQuery
             TableId tableId = TableId.of(projectId, datasetName, tableName);
             
-            // Get table schema for LOAD job
             Table table = bigQuery.getTable(tableId);
             if (table == null) {
                 throw new BigQueryException("Table does not exist: " + tableId);
             }
             
-            // Create LOAD job configuration
             LoadJobConfiguration loadConfig = LoadJobConfiguration.newBuilder(tableId, gcsUri)
                     .setFormatOptions(FormatOptions.json())
                     .setWriteDisposition(WriteDisposition.WRITE_APPEND)
-                    .setAutodetect(false) // Use existing schema
+                    .setAutodetect(false)
                     .build();
             
-            // Create and run the job
             JobId jobId = JobId.of(UUID.randomUUID().toString());
             Job loadJob = bigQuery.create(JobInfo.newBuilder(loadConfig).setJobId(jobId).build());
             
             log.info("Created LOAD job {} to load {} events from {}", jobId.getJob(), events.size(), gcsUri);
             
-            // Step 4: Wait for job to complete
             loadJob = loadJob.waitFor();
             
             if (loadJob == null) {
@@ -451,19 +402,16 @@ public class BigQueryService {
                 throw new BigQueryException(errorMsg);
             }
             
-            // Step 5: Cleanup - delete temporary file from Cloud Storage
             if (cleanupTempFiles) {
                 try {
                     storage.delete(blobId);
                     log.debug("Cleaned up temporary file from Cloud Storage: {}", gcsUri);
                 } catch (Exception e) {
                     log.warn("Failed to cleanup temporary file from Cloud Storage: {}. Error: {}", gcsUri, e.getMessage());
-                    // Don't fail the operation if cleanup fails
                 }
             }
             
-            log.info("Successfully loaded {} events to BigQuery using LOAD job {} (free tier compatible)", 
-                events.size(), jobId.getJob());
+            log.info("Successfully loaded {} events to BigQuery using LOAD job {}", events.size(), jobId.getJob());
             
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -471,7 +419,6 @@ public class BigQueryService {
             throw new BigQueryException("LOAD job interrupted", e);
         } catch (Exception e) {
             log.error("Error loading events via LOAD job: {}", e.getMessage(), e);
-            // Try to cleanup on error
             if (blobId != null && cleanupTempFiles) {
                 try {
                     storage.delete(blobId);
@@ -490,21 +437,17 @@ public class BigQueryService {
             
             Map<String, Object> rowContent = convertToBigQueryRow(eventInbox);
             
-            // Create insert request
             InsertAllRequest.Builder requestBuilder = InsertAllRequest.newBuilder(tableId);
             requestBuilder.addRow(UUID.randomUUID().toString(), rowContent);
             InsertAllRequest request = requestBuilder.build();
 
-            // Execute insert
             InsertAllResponse response = bigQuery.insertAll(request);
 
-            // Handle partial failures
             if (response.hasErrors()) {
                 Map<Long, java.util.List<BigQueryError>> errors = response.getInsertErrors();
                 log.error("Errors occurred while inserting to BigQuery for event {}: {} errors out of {} rows", 
                     eventInbox.getEventId(), errors.size(), request.getRows().size());
                 
-                // Log detailed errors
                 errors.forEach((index, errorList) -> {
                     errorList.forEach(error -> {
                         log.error("Row {} error for event {}: {} - {}", 
@@ -520,7 +463,6 @@ public class BigQueryService {
             bigqueryInsertSuccessTotal.increment();
             log.debug("Successfully inserted event {} to BigQuery", eventInbox.getEventId());
         } catch (com.google.cloud.bigquery.BigQueryException e) {
-            // Check if it's the free tier limitation
             if (e.getCode() == 403 && e.getMessage() != null && 
                 e.getMessage().contains("Streaming insert is not allowed in the free tier")) {
                 bigqueryInsertFailureTotal.increment();
@@ -531,7 +473,6 @@ public class BigQueryService {
                 log.error(errorMsg);
                 throw new BigQueryException(errorMsg, e);
             }
-            // Re-throw other BigQuery exceptions
             bigqueryInsertFailureTotal.increment();
             throw new BigQueryException(
                 String.format("Failed to stream insert event %s to BigQuery: %s", eventInbox.getEventId(), e.getMessage()), e);
@@ -557,17 +498,11 @@ public class BigQueryService {
         }
         
         try {
-            // Convert LocalDateTime to microseconds since epoch for BigQuery TIMESTAMP
             long eventTsMicros = eventInbox.getEventTs().atOffset(ZoneOffset.UTC).toInstant().toEpochMilli() * 1000;
             long ingestedAtMicros = Instant.now().toEpochMilli() * 1000;
-            
-            // Extract event_date for partitioning (date part of event_ts)
             String eventDate = eventInbox.getEventTs().toLocalDate().toString();
-            
-            // Calculate payload hash
             String payloadHash = calculateSHA256(eventInbox.getPayloadJson());
             
-            // Create structured row content
             Map<String, Object> rowContent = new HashMap<>();
             rowContent.put("tenant_id", eventInbox.getTenantId());
             rowContent.put("event_id", eventInbox.getEventId());
@@ -588,7 +523,6 @@ public class BigQueryService {
 
     public void ensureTableExists() {
         try {
-            // First ensure dataset exists
             DatasetId datasetId = DatasetId.of(projectId, datasetName);
             Dataset dataset = bigQuery.getDataset(datasetId);
             if (dataset == null) {
@@ -600,7 +534,6 @@ public class BigQueryService {
                 log.debug("BigQuery dataset {}.{} already exists", projectId, datasetName);
             }
 
-            // Then check and create table if needed
             TableId tableId = TableId.of(projectId, datasetName, tableName);
             Table table = bigQuery.getTable(tableId);
 
@@ -612,7 +545,6 @@ public class BigQueryService {
             }
         } catch (com.google.cloud.bigquery.BigQueryException e) {
             if (e.getCode() == 404) {
-                // Dataset or table not found - try to create
                 log.info("Dataset or table not found (404), attempting to create...");
                 try {
                     ensureDatasetExists();
@@ -649,9 +581,7 @@ public class BigQueryService {
      */
     private void ensureGcsBucketExists() {
         try {
-            // Auto-generate bucket name if not provided
             if (gcsBucket == null || gcsBucket.trim().isEmpty()) {
-                // Generate a valid bucket name: project-id-bigquery-load-temp (lowercase, no special chars)
                 String autoBucketName = (projectId + "-bigquery-load-temp").toLowerCase()
                         .replaceAll("[^a-z0-9-]", "-")
                         .replaceAll("-+", "-")
@@ -660,16 +590,13 @@ public class BigQueryService {
                 log.info("Auto-generated GCS bucket name: {}", gcsBucket);
             }
 
-            // Check if bucket exists by trying to get it
             com.google.cloud.storage.Bucket bucket = null;
             try {
                 bucket = storage.get(gcsBucket);
             } catch (com.google.cloud.storage.StorageException e) {
                 if (e.getCode() == 404) {
-                    // Bucket doesn't exist - will create below
                     log.info("GCS bucket {} does not exist (404), will create...", gcsBucket);
                 } else {
-                    // Re-throw other errors
                     throw e;
                 }
             }
@@ -679,15 +606,13 @@ public class BigQueryService {
                 try {
                     bucket = storage.create(
                         com.google.cloud.storage.BucketInfo.newBuilder(gcsBucket)
-                            .setLocation("US") // Default location
+                            .setLocation("US")
                             .build()
                     );
-                    log.info("✅ Successfully created GCS bucket: {} (for LOAD jobs - free tier compatible)", gcsBucket);
+                    log.info("Successfully created GCS bucket: {}", gcsBucket);
                 } catch (com.google.cloud.storage.StorageException e) {
                     if (e.getCode() == 409) {
-                        // Bucket already exists (race condition - created by another process)
                         log.info("GCS bucket {} already exists (created by another process)", gcsBucket);
-                        // Verify it exists now
                         bucket = storage.get(gcsBucket);
                         if (bucket == null) {
                             throw new IllegalStateException("Bucket creation reported 409 but bucket still not found: " + gcsBucket);
@@ -701,7 +626,7 @@ public class BigQueryService {
             }
             } catch (com.google.cloud.storage.StorageException e) {
             if (e.getCode() == 403) {
-                log.error("❌ Permission denied creating/accessing GCS bucket: {}", gcsBucket);
+                log.error("Permission denied creating/accessing GCS bucket: {}", gcsBucket);
                 log.error("   Your service account needs one of the following:");
                 log.error("   1. Storage Admin role (on project) - to create buckets");
                 log.error("   2. Storage Object Admin role (on bucket) - if bucket already exists");
@@ -711,7 +636,7 @@ public class BigQueryService {
                     ". Service account needs Storage Admin role (to create) or Storage Object Admin role (if bucket exists). " +
                     "See GCS_BUCKET_SETUP.md for setup instructions.", e);
             } else if (e.getCode() == 404) {
-                log.error("❌ GCS bucket {} not found after creation attempt.", gcsBucket);
+                log.error("GCS bucket {} not found after creation attempt", gcsBucket);
                 log.error("   Please verify:");
                 log.error("   1. Bucket name is correct");
                 log.error("   2. Service account has Storage Admin role to create buckets");

@@ -1,0 +1,28 @@
+{
+  "serviceName": "ingestion-streaming-dev",
+  "cluster": "dev-cluster",
+  "taskDefinition": "ingestion-streaming-dev",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-xxxxx",
+        "subnet-yyyyy"
+      ],
+      "securityGroups": [
+        "sg-xxxxx"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/ingestion-streaming-dev/xxxxx",
+      "containerName": "ingestion-streaming",
+      "containerPort": 8080
+    }
+  ],
+  "healthCheckGracePeriodSeconds": 60
+}
+
